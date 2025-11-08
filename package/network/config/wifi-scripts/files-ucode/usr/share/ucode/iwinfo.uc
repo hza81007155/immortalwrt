@@ -285,7 +285,7 @@ function hwmodelist(name) {
 	const mode = { 'HT*': 'n', 'VHT*': 'ac', 'HE*': 'ax' };
 	let iface = ifaces[name];
 	let phy = board_data.wlan?.['phy' + iface.wiphy];
-	if (!phy || !iface.radio.band)
+	if (!phy || !iface.radio?.band)
 		return '';
 	let htmodes = phy.info.bands[uc(iface.radio.band)].modes;
 	let list = [];
@@ -393,7 +393,7 @@ export function info(name) {
 			mode: data.mode,
 			channel: format_channel(data.wiphy_freq),
 			freq: format_frequency(data.wiphy_freq),
-			htmode: data.radio.htmode,
+			htmode: data.radio?.htmode,
 			center_freq1: format_channel(data.center_freq1) || 'unknown',
 			center_freq2: format_channel(data.center_freq2) || 'unknown',
 			txpower: data.wiphy_tx_power_level / 100,
@@ -479,6 +479,42 @@ export function countrylist(dev) {
 	};
 
 	return list;
+};
+
+function scan_extension(ext, cell) {
+	const eht_chan_width = [ '20 MHz', '40 MHz', '80 MHz', '160 MHz', '320 MHz'];
+
+	switch(ord(ext, 0)) {
+	case 36:
+		let offset = 7;
+
+		if (!(ord(ext, 3) & 0x2))
+			break;
+
+		if (ord(ext, 2) & 0x40)
+			offset += 3;
+
+		if (ord(ext, 2) & 0x80)
+			offset += 1;
+
+		cell.he = {
+			chan_width: eht_chan_width[ord(ext, offset + 1) & 0x3],
+			center_chan_1: ord(ext, offset + 2),
+			center_chan_2: ord(ext, offset + 3),
+		};
+		break;
+
+	case 106:
+		if (!(ord(ext, 1) & 0x1))
+			break;
+
+		cell.eht = {
+			chan_width: eht_chan_width[ord(ext, 6) & 0x7],
+			center_chan_1: ord(ext, 7),
+			center_chan_2: ord(ext, 8),
+		};
+		break;
+	}
 };
 
 export function scan(dev) {
@@ -590,6 +626,10 @@ export function scan(dev) {
 					center_chan_1: ord(ie.data, 1),
 					center_chan_2: ord(ie.data, 2),
 				};
+				break;
+
+			case 255:
+				scan_extension(ie.data, cell);
 				break;
 			};
 
