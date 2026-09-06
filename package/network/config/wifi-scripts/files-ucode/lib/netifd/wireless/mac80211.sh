@@ -70,9 +70,9 @@ function setup_phy(phy, config, data) {
 	config.channel = +config.channel;
 	config.frequency = get_channel_frequency(config.band, config.channel);
 
-	if (config.country) {
-		log(`Setting country code to ${config.country}`);
-		system(`iw reg set ${config.country}`);
+	if (config.country_code) {
+		log(`Setting country code to ${config.country_code}`);
+		system(`iw reg set ${config.country_code}`);
 	}
 
 	set_default(config, 'rxantenna', 0xffffffff);
@@ -83,7 +83,9 @@ function setup_phy(phy, config, data) {
 	if (config.rxantenna == 'all')
 		config.rxantenna = 0xffffffff;
 
-	if (config.txantenna != data?.txantenna || config.rxantenna != data?.rxantenna)
+	let antenna_changed = (config.txantenna != data?.txantenna || config.rxantenna != data?.rxantenna);
+
+	if (antenna_changed)
 		reset_config(phy, config.radio);
 
 	netifd.set_data({
@@ -98,9 +100,12 @@ function setup_phy(phy, config, data) {
 	else
 		config.txpower = 'auto';
 
-	log(`Configuring '${phy}' txantenna: ${config.txantenna}, rxantenna: ${config.rxantenna} distance: ${config.distance}`);
-	system(`iw phy ${phy} set antenna ${config.txantenna} ${config.rxantenna}`);
-	system(`iw phy ${phy} set distance ${config.distance}`);
+	log(`Configuring '${phy}' distance: ${config.distance}`);
+	if (antenna_changed) {
+		log(`Setting antenna for '${phy}' txantenna: ${config.txantenna}, rxantenna: ${config.rxantenna}`);
+		system(`iw phy ${phy} set antenna ${config.txantenna} ${config.rxantenna} >/dev/null 2>&1`);
+	}
+	system(`iw phy ${phy} set distance ${config.distance} >/dev/null 2>&1`);
 	system(`iw phy ${phy} set txpower ${config.txpower}`);
 
 	if (config.frag)
@@ -120,6 +125,20 @@ function iw_htmode(config) {
 	case "HE20":
 	case "EHT20":
 		return "HT20";
+	case "HT40":
+	case "VHT40":
+	case "HE40":
+	case "EHT40":
+		switch (config.band) {
+		case "2g":
+			return (+config.channel < 7) ? "HT40+" : "HT40-";
+		case "6g":
+			let ch = +config.channel;
+			let c_base = int((ch - 1) / 8) * 8 + 1;
+			return "40 " + (5950 + (c_base + 2) * 5);
+		default:
+			return ((+config.channel / 4) % 2) ? "HT40+" : "HT40-";
+		}
 	case "VHT80":
 	case "HE80":
 	case "EHT80":
@@ -130,18 +149,6 @@ function iw_htmode(config) {
 	case "NONE":
 	case "NOHT":
 		return "NOHT";
-	}
-
-	if (substr(config.htmode, 2) == "40") {
-		switch (config.band) {
-		case "2g":
-			if (+config.channel < 7)
-				return "HT40+";
-			else
-				return "HT40-";
-		default:
-			return ((+config.channel / 4) % 2) ? "HT40+" : "HT40-";
-		}
 	}
 
 	return null;
@@ -212,7 +219,7 @@ function setup() {
 		idx[mode] ??= 0;
 		let mode_idx = idx[mode]++;
 
-		if (!v.config.ifname) 
+		if (!v.config.ifname)
 			v.config.ifname = data.ifname_prefix + mode + mode_idx;
 		push(active_ifnames, v.config.ifname);
 
@@ -245,12 +252,13 @@ function setup() {
 				break;
 			// fallthrough
 		case 'mesh':
-			supplicant_mesh ??= !system("wpa_supplicant -vmesh");
+			supplicant_mesh ??= (fs.access('/usr/sbin/wpa_supplicant', 'x') && !system("/usr/sbin/wpa_supplicant -vmesh"));
 			if (mode == "mesh" && !supplicant_mesh)
 				break;
 			// fallthrough
 		case 'sta':
 			data.ap_start_disabled = true;
+			data.channel_follow = true;
 			let config = supplicant.generate(supplicant_data, data, v);
 			if (mode == "mesh")
 				config_add_mesh_params(config, v.config);
@@ -288,10 +296,21 @@ function setup() {
 		wdev_data[v.config.ifname] = config;
 	}
 
-	supplicant.setup(supplicant_data, data);
-	hostapd.setup(data);
+	for (let ifname in active_ifnames) {
+		if (!wdev_data[ifname])
+			continue;
 
-	system(`ucode /usr/share/hostap/wdev.uc ${data.phy}${data.phy_suffix} set_config '${printf("%J", wdev_data)}' ${join(' ', active_ifnames)}`);
+		let if_config = {
+			[ifname]: wdev_data[ifname]
+		};
+		system(`ucode /usr/share/hostap/wdev.uc ${data.phy}${data.phy_suffix} set_config '${if_config}'`);
+	}
+
+	if (fs.access('/usr/sbin/wpa_supplicant', 'x'))
+		supplicant.setup(supplicant_data, data);
+
+	if (fs.access('/usr/sbin/hostapd', 'x'))
+		hostapd.setup(data);
 
 	if (length(supplicant_data) > 0)
 		supplicant.start(data);
